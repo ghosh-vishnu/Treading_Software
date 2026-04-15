@@ -195,6 +195,15 @@ class BrokerService:
             responses.append(response)
         return responses
 
+    def disconnect_account(self, db: Session, user: User, account_id: int) -> None:
+        repo = BrokerRepository(db)
+        account = repo.get_by_id_for_user(user.id, account_id)
+        if account is None or not account.is_active:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker account not found")
+
+        account.is_active = False
+        db.commit()
+
     def place_order(
         self,
         db: Session,

@@ -23,3 +23,7 @@ class BrokerRepository(Repository[BrokerAccount]):
             .order_by(BrokerAccount.updated_at.desc())
         )
         return list(self.db.scalars(statement).all())
+
+    def get_by_id_for_user(self, user_id: int, account_id: int) -> BrokerAccount | None:
+        statement = select(BrokerAccount).where(BrokerAccount.user_id == user_id, BrokerAccount.id == account_id)
+        return self.db.scalar(statement)

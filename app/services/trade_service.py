@@ -13,6 +13,7 @@ from app.repositories.copy_repository import CopyRepository
 from app.repositories.trade_repository import TradeRepository
 from app.schemas.trade import TradeCreateRequest
 from app.services.broker_service import broker_service
+from app.services.notification_service import notification_service
 from app.services.risk_service import risk_service
 from app.services.websocket_manager import websocket_manager
 
@@ -49,6 +50,13 @@ class TradeService:
             take_profit=payload.take_profit,
         )
         trade_repo.create(trade)
+        notification_service.create_internal(
+            db,
+            user_id=user.id,
+            category="trade",
+            title="Trade Executed",
+            message=f"{trade.side} {trade.quantity} {trade.symbol} via {trade.broker}",
+        )
         db.commit()
         db.refresh(trade)
 

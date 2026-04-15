@@ -5,6 +5,7 @@ from app.api.dependencies import get_current_user
 from app.core.rate_limit import limiter
 from app.db.session import get_db
 from app.models.user import User
+from app.schemas.common import MessageResponse
 from app.schemas.broker import BrokerAccountResponse, BrokerBalanceResponse, BrokerConnectRequest, BrokerOrderResponse, BrokerPositionResponse
 from app.services.broker_service import broker_service
 
@@ -27,6 +28,12 @@ def connect_broker(
 @router.get("/accounts", response_model=list[BrokerAccountResponse])
 def get_connected_accounts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return broker_service.list_connected_accounts(db, current_user)
+
+
+@router.delete("/accounts/{account_id}", response_model=MessageResponse)
+def disconnect_account(account_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    broker_service.disconnect_account(db, current_user, account_id)
+    return MessageResponse(message="Broker account removed successfully")
 
 
 @router.get("/balance", response_model=BrokerBalanceResponse)
