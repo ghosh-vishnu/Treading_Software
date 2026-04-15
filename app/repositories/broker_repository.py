@@ -15,3 +15,11 @@ class BrokerRepository(Repository[BrokerAccount]):
         if broker_name:
             statement = statement.where(BrokerAccount.broker_name == broker_name)
         return self.db.scalar(statement.order_by(BrokerAccount.updated_at.desc()))
+
+    def list_active_for_user(self, user_id: int) -> list[BrokerAccount]:
+        statement = (
+            select(BrokerAccount)
+            .where(BrokerAccount.user_id == user_id, BrokerAccount.is_active.is_(True))
+            .order_by(BrokerAccount.updated_at.desc())
+        )
+        return list(self.db.scalars(statement).all())

@@ -22,6 +22,7 @@ class BrokerAccountResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     metadata_json: str | None
+    display_client_id: str | None = None
 
 
 class BrokerBalanceResponse(BaseModel):

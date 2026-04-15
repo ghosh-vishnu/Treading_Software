@@ -16,3 +16,5 @@ class StrategyRepository(Repository[Strategy]):
     def list_for_user(self, user_id: int) -> list[Strategy]:
         statement = select(Strategy).where(Strategy.user_id == user_id).order_by(Strategy.created_at.desc())
         return list(self.db.scalars(statement).all())
+    
+    

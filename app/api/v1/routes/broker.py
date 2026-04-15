@@ -24,6 +24,11 @@ def connect_broker(
     return broker_service.connect_account(db, current_user, payload)
 
 
+@router.get("/accounts", response_model=list[BrokerAccountResponse])
+def get_connected_accounts(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    return broker_service.list_connected_accounts(db, current_user)
+
+
 @router.get("/balance", response_model=BrokerBalanceResponse)
 def get_balance(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     return broker_service.get_balance(db, current_user)

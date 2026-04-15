@@ -7,6 +7,7 @@ from app.core.rate_limit import limiter
 from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
+    ChangePasswordRequest,
     LoginRequest,
     RefreshTokenRequest,
     RegisterRequest,
@@ -60,3 +61,16 @@ def update_profile(
     current_user: User = Depends(get_current_user),
 ):
     return auth_service.update_profile(db, current_user, payload)
+
+
+@router.post("/change-password", response_model=MessageResponse)
+@limiter.limit("10/minute")
+def change_password(
+    request: Request,
+    response: Response,
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    auth_service.change_password(db, current_user, payload)
+    return MessageResponse(message="Password updated successfully")

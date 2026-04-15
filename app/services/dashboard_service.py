@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -51,7 +52,11 @@ class DashboardService:
         if summary.total_trades:
             win_rate = (Decimal(summary.winning_trades) / Decimal(summary.total_trades) * Decimal("100")).quantize(Decimal("0.01"))
 
-        open_positions_raw = broker_service.get_positions(db, user)
+        try:
+            open_positions_raw = broker_service.get_positions(db, user)
+        except HTTPException:
+            # Keep dashboard usable even when broker API temporarily rejects position calls.
+            open_positions_raw = []
         open_positions = [
             DashboardOpenPosition(
                 symbol=str(position.get("symbol", "")),

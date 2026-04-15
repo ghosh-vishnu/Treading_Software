@@ -40,6 +40,20 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password_complexity(cls, value: str) -> str:
+        if not PASSWORD_COMPLEXITY_PATTERN.match(value):
+            raise ValueError(
+                "Password must include at least one uppercase letter, one lowercase letter, one number, and one special character"
+            )
+        return value
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str

@@ -17,6 +17,7 @@ from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
+    ChangePasswordRequest,
     LoginRequest,
     RegisterRequest,
     TokenPair,
@@ -124,6 +125,17 @@ class AuthService:
         db.commit()
         db.refresh(user)
         return UserProfileResponse.model_validate(user)
+
+    def change_password(self, db: Session, user: User, payload: ChangePasswordRequest) -> None:
+        if not verify_password(payload.current_password, user.hashed_password):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
+
+        if payload.current_password == payload.new_password:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be different")
+
+        user.hashed_password = get_password_hash(payload.new_password)
+        db.add(user)
+        db.commit()
 
     def _issue_tokens(self, db: Session, user: User) -> TokenPair:
         access_token = create_access_token(subject=str(user.id))

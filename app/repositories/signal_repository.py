@@ -13,3 +13,5 @@ class SignalRepository(Repository[Signal]):
     def list_for_user(self, user_id: int) -> list[Signal]:
         statement = select(Signal).where(Signal.user_id == user_id).order_by(Signal.created_at.desc())
         return list(self.db.scalars(statement).all())
+
+    
