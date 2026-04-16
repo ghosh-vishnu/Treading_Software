@@ -16,6 +16,7 @@ from app.brokers.base import BrokerClient
 
 class DeltaExchangeBroker(BrokerClient):
     name = "delta"
+    _POSITION_UNDERLYING_FALLBACKS = ["BTC", "ETH", "SOL", "XRP", "BNB", "ADA", "DOGE"]
 
     def __init__(self, api_key: str | None = None, api_secret: str | None = None, base_url: str | None = None) -> None:
         self.api_key = api_key or settings.delta_api_key
@@ -61,8 +62,9 @@ class DeltaExchangeBroker(BrokerClient):
         price: Decimal | None,
         order_type: str,
     ) -> dict[str, Any]:
+        product_symbol = symbol.upper()
         payload: dict[str, Any] = {
-            "symbol": symbol,
+            "product_symbol": product_symbol,
             "side": side.lower(),
             "size": str(quantity),
             "order_type": order_type.lower(),
@@ -73,6 +75,42 @@ class DeltaExchangeBroker(BrokerClient):
         # Delta Exchange uses signed REST requests. Keep the endpoint isolated here so it can be adapted
         # quickly if the exchange version changes.
         return self._request("POST", "/v2/orders", json_body=payload)
+
+    def _request_positions_by_underlying(self, underlying_symbol: str) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            "/v2/positions",
+            params={"underlying_asset_symbol": underlying_symbol},
+        )
+        if isinstance(payload, dict) and "result" in payload:
+            result = payload["result"]
+            return result if isinstance(result, list) else [result]
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    @staticmethod
+    def _normalize_positions(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+
+            symbol = item.get("symbol") or item.get("product_symbol") or item.get("contract") or "UNKNOWN"
+            quantity = item.get("size") or item.get("quantity") or item.get("position_size") or 0
+            avg_entry_price = item.get("entry_price") or item.get("avg_entry_price") or item.get("average_price") or 0
+            unrealized_pnl = item.get("unrealized_pnl") or item.get("pnl") or item.get("mark_pnl") or 0
+
+            normalized.append(
+                {
+                    "symbol": str(symbol),
+                    "quantity": Decimal(str(quantity)),
+                    "avg_entry_price": Decimal(str(avg_entry_price)),
+                    "unrealized_pnl": Decimal(str(unrealized_pnl)),
+                }
+            )
+
+        return normalized
 
     def get_balance(self) -> dict[str, Any]:
         payload = self._request("GET", "/v2/wallet/balances")
@@ -122,35 +160,46 @@ class DeltaExchangeBroker(BrokerClient):
         return {"broker": "delta", "balance": Decimal("0"), "currency": "USD"}
 
     def get_positions(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/v2/positions")
-        if isinstance(payload, dict) and "result" in payload:
-            result = payload["result"]
-            records = result if isinstance(result, list) else [result]
-        elif isinstance(payload, list):
-            records = payload
-        else:
-            records = []
+        try:
+            payload = self._request("GET", "/v2/positions")
+            if isinstance(payload, dict) and "result" in payload:
+                result = payload["result"]
+                records = result if isinstance(result, list) else [result]
+            elif isinstance(payload, list):
+                records = payload
+            else:
+                records = []
+            return self._normalize_positions(records)
+        except httpx.HTTPStatusError as exc:
+            response_text = ""
+            if exc.response is not None:
+                response_text = exc.response.text.lower()
 
-        normalized: list[dict[str, Any]] = []
-        for item in records:
-            if not isinstance(item, dict):
-                continue
+            schema_requires_underlying = "underlying_asset_symbol" in response_text or "product_id" in response_text
+            if not schema_requires_underlying:
+                raise
 
-            symbol = item.get("symbol") or item.get("product_symbol") or item.get("contract") or "UNKNOWN"
-            quantity = item.get("size") or item.get("quantity") or item.get("position_size") or 0
-            avg_entry_price = item.get("entry_price") or item.get("avg_entry_price") or item.get("average_price") or 0
-            unrealized_pnl = item.get("unrealized_pnl") or item.get("pnl") or item.get("mark_pnl") or 0
+            merged_records: list[dict[str, Any]] = []
+            seen: set[tuple[str, str]] = set()
+            for underlying in self._POSITION_UNDERLYING_FALLBACKS:
+                try:
+                    records = self._request_positions_by_underlying(underlying)
+                except httpx.HTTPStatusError:
+                    continue
 
-            normalized.append(
-                {
-                    "symbol": str(symbol),
-                    "quantity": Decimal(str(quantity)),
-                    "avg_entry_price": Decimal(str(avg_entry_price)),
-                    "unrealized_pnl": Decimal(str(unrealized_pnl)),
-                }
-            )
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+                    key = (
+                        str(record.get("product_id") or record.get("id") or ""),
+                        str(record.get("product_symbol") or record.get("symbol") or ""),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged_records.append(record)
 
-        return normalized
+            return self._normalize_positions(merged_records)
 
     def get_order_status(self, order_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v2/orders/{order_id}")

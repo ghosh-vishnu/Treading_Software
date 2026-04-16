@@ -29,21 +29,56 @@ class BrokerService:
             return {}
 
     @staticmethod
-    def _extract_error_code(exc: Exception) -> str | None:
+    def _extract_error_payload(exc: Exception) -> dict[str, Any] | None:
         response = getattr(exc, "response", None)
         text = getattr(response, "text", None)
         if not text:
             return None
         try:
             payload = json.loads(text)
-            if isinstance(payload, dict):
-                error = payload.get("error")
-                if isinstance(error, dict):
-                    code = error.get("code")
-                    return str(code) if code else None
+            return payload if isinstance(payload, dict) else None
         except json.JSONDecodeError:
             return None
+
+    @classmethod
+    def _extract_error_code(cls, exc: Exception) -> str | None:
+        payload = cls._extract_error_payload(exc)
+        if not payload:
+            return None
+        error = payload.get("error")
+        if isinstance(error, dict):
+            code = error.get("code")
+            return str(code) if code else None
         return None
+
+    @classmethod
+    def _build_connect_error_message(cls, exc: Exception) -> str:
+        payload = cls._extract_error_payload(exc)
+        if payload:
+            error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+            code = str(error.get("code") or "").strip()
+            context = error.get("context") if isinstance(error.get("context"), dict) else {}
+
+            if code == "ip_not_whitelisted_for_api_key":
+                client_ip = context.get("client_ip")
+                if isinstance(client_ip, str) and client_ip:
+                    return (
+                        f"Broker authentication failed: API key IP whitelist mismatch. "
+                        f"Add this server IP to your Delta API whitelist: {client_ip}."
+                    )
+                return "Broker authentication failed: API key IP whitelist mismatch. Add this server IP to your Delta API whitelist."
+
+            if code == "invalid_api_key":
+                return "Broker authentication failed: Invalid API key or secret."
+
+            if code:
+                return f"Broker authentication failed: {code}."
+
+        detail = cls._extract_error_detail(exc)
+        if detail:
+            return f"Broker authentication failed: {detail}"
+
+        return f"Broker connection validation failed: {str(exc)}"
 
     @staticmethod
     def _extract_error_detail(exc: Exception) -> str | None:
@@ -112,26 +147,14 @@ class BrokerService:
                     candidate_client.get_balance()
                     selected_base_url = fallback_url
                 except Exception as fallback_exc:
-                    response = getattr(fallback_exc, "response", None)
-                    detail = getattr(response, "text", None)
-                    if detail:
-                        error_detail = f"Broker authentication failed: {detail}"
-                    else:
-                        error_detail = f"Broker connection validation failed: {str(fallback_exc)}"
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=error_detail,
+                        detail=self._build_connect_error_message(fallback_exc),
                     ) from fallback_exc
             else:
-                response = getattr(exc, "response", None)
-                detail = getattr(response, "text", None)
-                if detail:
-                    error_detail = f"Broker authentication failed: {detail}"
-                else:
-                    error_detail = f"Broker connection validation failed: {str(exc)}"
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=error_detail,
+                    detail=self._build_connect_error_message(exc),
                 ) from exc
 
         repo = BrokerRepository(db)
