@@ -11,7 +11,6 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=2, max_length=255)
     password: str = Field(min_length=8, max_length=128)
-    role: str = Field(default="user", pattern="^(admin|user)$")
 
     @field_validator("full_name")
     @classmethod

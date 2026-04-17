@@ -38,7 +38,7 @@ class AuthService:
             email=normalized_email,
             full_name=payload.full_name,
             hashed_password=get_password_hash(payload.password),
-            role=payload.role,
+            role="user",
         )
         db.add(user)
         db.flush()

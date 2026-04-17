@@ -34,3 +34,8 @@ def send_signal(
     current_user: User = Depends(get_current_user),
 ):
     return strategy_service.process_signal(db, current_user, payload)
+
+
+@router.get("/public", response_model=list[StrategyResponse])
+def list_public_strategies(db: Session = Depends(get_db)):
+    return strategy_service.list_public_strategies(db)

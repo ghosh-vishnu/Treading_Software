@@ -58,6 +58,10 @@ class Settings(BaseSettings):
 
     cors_origins: List[str]
 
+    admin_seed_email: str = ""
+    admin_seed_password: str = ""
+    admin_seed_full_name: str = "Super Admin"
+
 
 @lru_cache
 def get_settings() -> Settings:

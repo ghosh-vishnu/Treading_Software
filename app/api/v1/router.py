@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.routes import academy, auth, backtesting, broker, copy, dashboard, kyc, notifications, settings, strategy, trade
+from app.api.v1.routes import admin, academy, auth, backtesting, broker, copy, dashboard, kyc, notifications, settings, strategy, trade
 
 
 api_router_v1 = APIRouter()
@@ -15,3 +15,4 @@ api_router_v1.include_router(kyc.router, prefix="/kyc", tags=["kyc"])
 api_router_v1.include_router(academy.router, prefix="/academy", tags=["academy"])
 api_router_v1.include_router(backtesting.router, prefix="/backtesting", tags=["backtesting"])
 api_router_v1.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
+api_router_v1.include_router(admin.router, prefix="/admin", tags=["admin"])

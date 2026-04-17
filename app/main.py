@@ -16,8 +16,10 @@ from app.core.config import settings
 from app.core.logging import configure_logging, logger
 from app.core.rate_limit import limiter
 from app.db.base import Base
-from app.db.session import engine
+from app.db.session import SessionLocal, engine
 from app.models import *  # noqa: F401,F403
+from app.models.user import User
+from app.core.security import get_password_hash
 from app.services.market_data_service import market_data_service
 from app.services.websocket_manager import websocket_manager
 
@@ -27,10 +29,42 @@ async def lifespan(_: FastAPI):
     # For MVP we bootstrap schema at startup; migrations can be added in Phase 2.
     Base.metadata.create_all(bind=engine)
     _apply_schema_compatibility_patches()
+    _seed_admin_account()
     logger.info("Database schema ensured")
     broadcaster = asyncio.create_task(_broadcast_market_data())
     yield
     broadcaster.cancel()
+
+
+def _seed_admin_account() -> None:
+    if not settings.admin_seed_email or not settings.admin_seed_password:
+        return
+
+    admin_email = settings.admin_seed_email.strip().lower()
+    admin_name = settings.admin_seed_full_name.strip() or "Super Admin"
+
+    db = SessionLocal()
+    try:
+        admin_user = db.query(User).filter(User.email == admin_email).one_or_none()
+        if admin_user is None:
+            admin_user = User(
+                email=admin_email,
+                full_name=admin_name,
+                hashed_password=get_password_hash(settings.admin_seed_password),
+                role="admin",
+                is_active=True,
+            )
+            db.add(admin_user)
+        else:
+            admin_user.full_name = admin_name
+            admin_user.hashed_password = get_password_hash(settings.admin_seed_password)
+            admin_user.role = "admin"
+            admin_user.is_active = True
+            db.add(admin_user)
+
+        db.commit()
+    finally:
+        db.close()
 
 
 def _apply_schema_compatibility_patches() -> None:
@@ -63,6 +97,32 @@ def _apply_schema_compatibility_patches() -> None:
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS leader_trade_id INTEGER",
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS stop_loss NUMERIC(18,4)",
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS take_profit NUMERIC(18,4)",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS exchange VARCHAR(80) DEFAULT 'Delta Exchange'",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS followers INTEGER DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS recommended_margin NUMERIC(18,2) DEFAULT 1000",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS mdd_percent NUMERIC(7,2) DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS win_rate_percent NUMERIC(7,2) DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS pnl NUMERIC(18,2) DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS roi_percent NUMERIC(7,2) DEFAULT 0",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS chart_points TEXT",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS academy_slugs TEXT",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS is_featured BOOLEAN DEFAULT FALSE",
+        "UPDATE strategies SET exchange = 'Delta Exchange' WHERE exchange IS NULL",
+        "UPDATE strategies SET followers = 0 WHERE followers IS NULL",
+        "UPDATE strategies SET recommended_margin = 1000 WHERE recommended_margin IS NULL",
+        "UPDATE strategies SET mdd_percent = 0 WHERE mdd_percent IS NULL",
+        "UPDATE strategies SET win_rate_percent = 0 WHERE win_rate_percent IS NULL",
+        "UPDATE strategies SET pnl = 0 WHERE pnl IS NULL",
+        "UPDATE strategies SET roi_percent = 0 WHERE roi_percent IS NULL",
+        "UPDATE strategies SET is_featured = FALSE WHERE is_featured IS NULL",
+        "ALTER TABLE strategies ALTER COLUMN exchange SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN followers SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN recommended_margin SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN mdd_percent SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN win_rate_percent SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN pnl SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN roi_percent SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN is_featured SET NOT NULL",
     ]
 
     with engine.begin() as connection:
