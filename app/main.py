@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import asyncio
+from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -18,6 +20,7 @@ from app.core.rate_limit import limiter
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.models import *  # noqa: F401,F403
+from app.models.platform_setting import PlatformSetting
 from app.models.user import User
 from app.core.security import get_password_hash
 from app.services.market_data_service import market_data_service
@@ -30,6 +33,7 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     _apply_schema_compatibility_patches()
     _seed_admin_account()
+    _seed_platform_settings()
     logger.info("Database schema ensured")
     broadcaster = asyncio.create_task(_broadcast_market_data())
     yield
@@ -67,6 +71,26 @@ def _seed_admin_account() -> None:
         db.close()
 
 
+def _seed_platform_settings() -> None:
+    db = SessionLocal()
+    try:
+        existing = db.query(PlatformSetting).first()
+        if existing is None:
+            db.add(
+                PlatformSetting(
+                    site_name=settings.project_name,
+                    support_email="support@example.com",
+                    fee_percent=0.1,
+                    profit_share_percent=20.0,
+                    maintenance_mode=False,
+                    telegram_alerts_enabled=False,
+                )
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
 def _apply_schema_compatibility_patches() -> None:
     # Backfill columns for users/trades created before the latest model updates.
     patches = [
@@ -98,6 +122,10 @@ def _apply_schema_compatibility_patches() -> None:
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS stop_loss NUMERIC(18,4)",
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS take_profit NUMERIC(18,4)",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS exchange VARCHAR(80) DEFAULT 'Delta Exchange'",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS risk_level VARCHAR(20) DEFAULT 'medium'",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS logo_url TEXT",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS image_url TEXT",
+        "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS tags TEXT",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS followers INTEGER DEFAULT 0",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS recommended_margin NUMERIC(18,2) DEFAULT 1000",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS mdd_percent NUMERIC(7,2) DEFAULT 0",
@@ -108,6 +136,7 @@ def _apply_schema_compatibility_patches() -> None:
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS academy_slugs TEXT",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS is_featured BOOLEAN DEFAULT FALSE",
         "UPDATE strategies SET exchange = 'Delta Exchange' WHERE exchange IS NULL",
+        "UPDATE strategies SET risk_level = 'medium' WHERE risk_level IS NULL",
         "UPDATE strategies SET followers = 0 WHERE followers IS NULL",
         "UPDATE strategies SET recommended_margin = 1000 WHERE recommended_margin IS NULL",
         "UPDATE strategies SET mdd_percent = 0 WHERE mdd_percent IS NULL",
@@ -116,6 +145,7 @@ def _apply_schema_compatibility_patches() -> None:
         "UPDATE strategies SET roi_percent = 0 WHERE roi_percent IS NULL",
         "UPDATE strategies SET is_featured = FALSE WHERE is_featured IS NULL",
         "ALTER TABLE strategies ALTER COLUMN exchange SET NOT NULL",
+        "ALTER TABLE strategies ALTER COLUMN risk_level SET NOT NULL",
         "ALTER TABLE strategies ALTER COLUMN followers SET NOT NULL",
         "ALTER TABLE strategies ALTER COLUMN recommended_margin SET NOT NULL",
         "ALTER TABLE strategies ALTER COLUMN mdd_percent SET NOT NULL",
@@ -153,6 +183,10 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
     )
+
+    storage_dir = Path(__file__).resolve().parents[1] / "storage"
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/storage", StaticFiles(directory=str(storage_dir)), name="storage")
 
     app.add_middleware(
         CORSMiddleware,
@@ -197,7 +231,21 @@ def create_app() -> FastAPI:
             response.headers["X-Frame-Options"] = "DENY"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
-            response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
+
+            # FastAPI's built-in docs use jsDelivr and inline bootstrap scripts/styles.
+            # Keep strict CSP for API routes, and apply a docs-specific policy only on docs endpoints.
+            if request.url.path.startswith("/docs") or request.url.path.startswith("/redoc"):
+                response.headers["Content-Security-Policy"] = (
+                    "default-src 'self'; "
+                    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+                    "img-src 'self' data: https:; "
+                    "font-src 'self' https://cdn.jsdelivr.net; "
+                    "connect-src 'self'; "
+                    "frame-ancestors 'none'"
+                )
+            else:
+                response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none'"
             if settings.environment == "production" and settings.hsts_max_age_seconds > 0:
                 response.headers["Strict-Transport-Security"] = (
                     f"max-age={settings.hsts_max_age_seconds}; includeSubDomains"

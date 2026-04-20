@@ -38,6 +38,13 @@ class StrategyService:
             return None
         return ",".join(normalized)
 
+    @staticmethod
+    def _encode_tags(tags: Iterable[str]) -> str | None:
+        normalized = [item.strip().lower() for item in tags if item.strip()]
+        if not normalized:
+            return None
+        return ",".join(normalized)
+
     def create_strategy(self, db: Session, user: User, payload: StrategyCreateRequest) -> StrategyResponse:
         repo = StrategyRepository(db)
         existing = repo.get_by_tag(payload.strategy_tag)
@@ -71,6 +78,10 @@ class StrategyService:
             strategy_tag=payload.strategy_tag,
             is_public=payload.is_public,
             exchange=payload.exchange,
+            risk_level=payload.risk_level,
+            logo_url=payload.logo_url,
+            image_url=payload.image_url,
+            tags=self._encode_tags(payload.tags),
             followers=payload.followers,
             recommended_margin=payload.recommended_margin,
             mdd_percent=payload.mdd_percent,
@@ -110,6 +121,8 @@ class StrategyService:
                 setattr(strategy, "chart_points", self._encode_decimal_series(value))
             elif field_name == "academy_slugs" and value is not None:
                 setattr(strategy, "academy_slugs", self._encode_slug_list(value))
+            elif field_name == "tags" and value is not None:
+                setattr(strategy, "tags", self._encode_tags(value))
             else:
                 setattr(strategy, field_name, value)
 

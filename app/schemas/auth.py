@@ -39,6 +39,24 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=16, max_length=256)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_reset_password_complexity(cls, value: str) -> str:
+        if not PASSWORD_COMPLEXITY_PATTERN.match(value):
+            raise ValueError(
+                "Password must include at least one uppercase letter, one lowercase letter, one number, and one special character"
+            )
+        return value
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(min_length=8, max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
@@ -53,10 +71,49 @@ class ChangePasswordRequest(BaseModel):
         return value
 
 
+class DeleteAccountRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=128)
+
+
+class TrustDeviceRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=255)
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+
+
+class SessionInfoResponse(BaseModel):
+    id: int
+    created_at: datetime
+    expires_at: datetime
+    is_current: bool
+    is_trusted: bool = False
+    device_name: str | None = None
+    browser: str | None = None
+    os: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class TrustedDeviceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    device_fingerprint: str
+    device_name: str | None = None
+    browser: str | None = None
+    os: str | None = None
+    ip_address: str | None = None
+    user_agent: str | None = None
+    trusted_at: datetime
+    last_seen_at: datetime | None = None
+    revoked_at: datetime | None = None
 
 
 class UserResponse(BaseModel):
@@ -67,6 +124,10 @@ class UserResponse(BaseModel):
     full_name: str
     username: str | None = None
     phone: str | None = None
+    mobile: str | None = None
+    country: str | None = None
+    timezone: str | None = None
+    avatar_url: str | None = None
     gender: str | None = None
     age: int | None = None
     experience_level: str | None = None
@@ -90,6 +151,10 @@ class UserProfileResponse(BaseModel):
     full_name: str
     username: str | None = None
     phone: str | None = None
+    mobile: str | None = None
+    country: str | None = None
+    timezone: str | None = None
+    avatar_url: str | None = None
     gender: str | None = None
     age: int | None = None
     experience_level: str | None = None
@@ -101,18 +166,23 @@ class UserProfileResponse(BaseModel):
 
 
 class UserProfileUpdateRequest(BaseModel):
-    full_name: str = Field(min_length=2, max_length=255)
+    full_name: str | None = Field(default=None, min_length=2, max_length=255)
     username: str | None = Field(default=None, min_length=3, max_length=100)
     phone: str | None = Field(default=None, max_length=30)
+    mobile: str | None = Field(default=None, max_length=30)
+    country: str | None = Field(default=None, max_length=80)
+    timezone: str | None = Field(default=None, max_length=80)
     gender: str | None = Field(default=None, max_length=20)
     age: int | None = Field(default=None, ge=13, le=120)
     experience_level: str | None = Field(default=None, max_length=30)
     bio: str | None = Field(default=None, max_length=500)
-    public_profile: bool = True
+    public_profile: bool | None = None
 
     @field_validator("full_name")
     @classmethod
-    def normalize_full_name(cls, value: str) -> str:
+    def normalize_full_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         return " ".join(value.strip().split())
 
     @field_validator("username")

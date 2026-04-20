@@ -103,6 +103,26 @@ def decode_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def get_token_jti(token: str) -> Optional[str]:
+    payload = decode_token(token)
+    if not payload:
+        return None
+    jti = payload.get("jti")
+    return str(jti) if jti is not None else None
+
+
+def get_token_issued_at(token: str) -> Optional[datetime]:
+    payload = decode_token(token)
+    if not payload:
+        return None
+    issued_at = payload.get("iat")
+    if isinstance(issued_at, datetime):
+        return issued_at.astimezone(timezone.utc)
+    if isinstance(issued_at, (int, float)):
+        return datetime.fromtimestamp(issued_at, tz=timezone.utc)
+    return None
+
+
 def is_token_expired(token: str) -> bool:
     payload = decode_token(token)
     if not payload:

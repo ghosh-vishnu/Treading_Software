@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     )
     refresh_token_reuse_protection: bool = True
     max_active_sessions_per_user: int = Field(default=5, ge=1, le=20)
+    login_lock_threshold: int = Field(default=5, ge=1, le=20)
+    login_lock_duration_minutes: int = Field(default=15, ge=1, le=1440)
 
     delta_api_key: str = ""
     delta_api_secret: str = ""

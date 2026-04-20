@@ -2,7 +2,7 @@ from datetime import datetime
 
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Numeric, String
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -24,6 +24,12 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(20), default="user", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, index=True, nullable=True)
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    tokens_revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     trading_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     max_daily_loss: Mapped[Decimal] = mapped_column(Numeric(18, 4), default=Decimal("500"), nullable=False)
     max_trades_per_day: Mapped[int] = mapped_column(default=50, nullable=False)
@@ -31,6 +37,7 @@ class User(Base):
 
     trades = relationship("Trade", back_populates="user", cascade="all,delete-orphan")
     refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all,delete-orphan")
+    profile = relationship("UserProfile", back_populates="user", cascade="all,delete-orphan", uselist=False)
     strategies = relationship("Strategy", back_populates="user", cascade="all,delete-orphan")
     signals = relationship("Signal", back_populates="user", cascade="all,delete-orphan")
     broker_accounts = relationship("BrokerAccount", back_populates="user", cascade="all,delete-orphan")

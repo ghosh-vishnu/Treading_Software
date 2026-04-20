@@ -27,6 +27,10 @@ class AdminStrategyCreateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     strategy_tag: str = Field(min_length=2, max_length=100)
     exchange: str = Field(default="Delta Exchange", min_length=2, max_length=80)
+    risk_level: str = Field(default="medium", pattern="^(low|medium|high)$")
+    logo_url: str | None = Field(default=None, max_length=2000)
+    image_url: str | None = Field(default=None, max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=20)
     followers: int = Field(default=0, ge=0)
     recommended_margin: Decimal = Field(gt=0)
     mdd_percent: Decimal = Field(ge=0)
@@ -44,6 +48,10 @@ class AdminStrategyUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     strategy_tag: str | None = Field(default=None, min_length=2, max_length=100)
     exchange: str | None = Field(default=None, min_length=2, max_length=80)
+    risk_level: str | None = Field(default=None, pattern="^(low|medium|high)$")
+    logo_url: str | None = Field(default=None, max_length=2000)
+    image_url: str | None = Field(default=None, max_length=2000)
+    tags: list[str] | None = Field(default=None, max_length=20)
     followers: int | None = Field(default=None, ge=0)
     recommended_margin: Decimal | None = Field(default=None, gt=0)
     mdd_percent: Decimal | None = Field(default=None, ge=0)
@@ -71,6 +79,10 @@ class StrategyResponse(BaseModel):
     strategy_tag: str
     is_public: bool
     exchange: str
+    risk_level: str
+    logo_url: str | None
+    image_url: str | None
+    tags: str | None
     followers: int
     recommended_margin: Decimal
     mdd_percent: Decimal
