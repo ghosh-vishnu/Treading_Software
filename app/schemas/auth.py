@@ -1,5 +1,6 @@
 from datetime import datetime
 import re
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -31,8 +32,96 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    identifier: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=8, max_length=128)
+
+
+class SendSignupOTPRequest(BaseModel):
+    email: EmailStr
+    phone: str = Field(min_length=8, max_length=20)
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_phone(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
+            raise ValueError("Phone number must be in valid international format")
+        return normalized
+
+
+class VerifySignupOTPRequest(BaseModel):
+    email: EmailStr
+    phone: str = Field(min_length=8, max_length=20)
+    email_challenge_id: str = Field(min_length=16, max_length=120)
+    email_otp: str = Field(min_length=4, max_length=8)
+    phone_challenge_id: str = Field(min_length=16, max_length=120)
+    phone_otp: str = Field(min_length=4, max_length=8)
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_verify_phone(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
+            raise ValueError("Phone number must be in valid international format")
+        return normalized
+
+
+class SignupOTPChallengeResponse(BaseModel):
+    email_challenge_id: str
+    phone_challenge_id: str
+    expires_in_seconds: int
+
+
+class SignupCompleteRequest(BaseModel):
+    email: EmailStr
+    full_name: str = Field(min_length=2, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+    phone: str = Field(min_length=8, max_length=20)
+    email_challenge_id: str = Field(min_length=16, max_length=120)
+    email_otp: str = Field(min_length=4, max_length=8)
+    phone_challenge_id: str = Field(min_length=16, max_length=120)
+    phone_otp: str = Field(min_length=4, max_length=8)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_signup_complete_full_name(cls, value: str) -> str:
+        normalized = " ".join(value.strip().split())
+        if len(normalized) < 2:
+            raise ValueError("Full name must be at least 2 characters")
+        return normalized
+
+    @field_validator("password")
+    @classmethod
+    def validate_signup_complete_password(cls, value: str) -> str:
+        if not PASSWORD_COMPLEXITY_PATTERN.match(value):
+            raise ValueError(
+                "Password must include at least one uppercase letter, one lowercase letter, one number, and one special character"
+            )
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_signup_complete_phone(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
+            raise ValueError("Phone number must be in valid international format")
+        return normalized
+
+
+class LoginOTPRequest(BaseModel):
+    identifier: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class VerifyLoginOTPRequest(BaseModel):
+    challenge_id: str = Field(min_length=16, max_length=120)
+    otp: str = Field(min_length=4, max_length=8)
+
+
+class LoginOTPChallengeResponse(BaseModel):
+    challenge_id: str
+    channel: Literal["email", "phone"]
+    expires_in_seconds: int
 
 
 class RefreshTokenRequest(BaseModel):

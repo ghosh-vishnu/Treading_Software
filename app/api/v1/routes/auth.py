@@ -12,14 +12,21 @@ from app.schemas.auth import (
     DeleteAccountRequest,
     ForgotPasswordRequest,
     LoginRequest,
+    LoginOTPChallengeResponse,
+    LoginOTPRequest,
     RefreshTokenRequest,
     ResetPasswordRequest,
     SessionInfoResponse,
     RegisterRequest,
+    SendSignupOTPRequest,
+    SignupCompleteRequest,
+    SignupOTPChallengeResponse,
     TokenPair,
     TrustedDeviceResponse,
     UserProfileResponse,
     UserProfileUpdateRequest,
+    VerifyLoginOTPRequest,
+    VerifySignupOTPRequest,
 )
 from app.schemas.common import MessageResponse
 from app.services.auth_service import auth_service
@@ -45,16 +52,67 @@ def _bearer_token(request: Request) -> str | None:
 
 @router.post("/signup", response_model=AuthResponse)
 @limiter.limit("10/minute")
-def signup(request: Request, response: Response, payload: RegisterRequest, db: Session = Depends(get_db)):
+def signup(
+    request: Request,
+    response: Response,
+    payload: SignupCompleteRequest,
+    db: Session = Depends(get_db),
+):
     ip_address, user_agent, request_id = _request_metadata(request)
-    return auth_service.register(db, payload, ip_address=ip_address, user_agent=user_agent, request_id=request_id)
+    return auth_service.register(
+        db,
+        RegisterRequest(email=payload.email, full_name=payload.full_name, password=payload.password),
+        otp_payload=VerifySignupOTPRequest(
+            email=payload.email,
+            phone=payload.phone,
+            email_challenge_id=payload.email_challenge_id,
+            email_otp=payload.email_otp,
+            phone_challenge_id=payload.phone_challenge_id,
+            phone_otp=payload.phone_otp,
+        ),
+        ip_address=ip_address,
+        user_agent=user_agent,
+        request_id=request_id,
+    )
 
 
-@router.post("/login", response_model=AuthResponse)
+@router.post("/signup/send-otp", response_model=SignupOTPChallengeResponse)
+@limiter.limit("5/minute")
+def send_signup_otp(request: Request, response: Response, payload: SendSignupOTPRequest, db: Session = Depends(get_db)):
+    return auth_service.send_signup_otp(db, payload)
+
+
+@router.post("/signup/verify-otp", response_model=MessageResponse)
+@limiter.limit("10/minute")
+def verify_signup_otp(request: Request, response: Response, payload: VerifySignupOTPRequest, db: Session = Depends(get_db)):
+    auth_service.verify_signup_otp(db, payload)
+    return MessageResponse(message="Signup OTP verified")
+
+
+@router.post("/login", response_model=LoginOTPChallengeResponse)
 @limiter.limit("10/minute")
 def login(request: Request, response: Response, payload: LoginRequest, db: Session = Depends(get_db)):
     ip_address, user_agent, request_id = _request_metadata(request)
     return auth_service.login(db, payload, ip_address=ip_address, user_agent=user_agent, request_id=request_id)
+
+
+@router.post("/login/send-otp", response_model=LoginOTPChallengeResponse)
+@limiter.limit("10/minute")
+def login_send_otp(request: Request, response: Response, payload: LoginOTPRequest, db: Session = Depends(get_db)):
+    return auth_service.login_with_otp(db, payload)
+
+
+@router.post("/login/verify-otp", response_model=AuthResponse)
+@limiter.limit("10/minute")
+def login_verify_otp(request: Request, response: Response, payload: VerifyLoginOTPRequest, db: Session = Depends(get_db)):
+    ip_address, user_agent, request_id = _request_metadata(request)
+    return auth_service.verify_login_otp(
+        db,
+        payload,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        request_id=request_id,
+    )
 
 
 @router.post("/refresh", response_model=TokenPair)

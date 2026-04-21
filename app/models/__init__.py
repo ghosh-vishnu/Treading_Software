@@ -20,6 +20,7 @@ from app.models.user_profile import UserProfile
 from app.models.user_settings import UserSettings
 from app.models.wallet import Wallet
 from app.models.trusted_device import TrustedDevice
+from app.models.auth_otp import AuthOTP
 
 __all__ = [
 	"User",
@@ -44,4 +45,5 @@ __all__ = [
 	"PlatformSetting",
 	"PasswordResetToken",
 	"UserProfile",
+	"AuthOTP",
 ]

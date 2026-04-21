@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import random
+import re
 import secrets
 
 from fastapi import HTTPException, status
@@ -23,6 +25,7 @@ from app.models.password_history import PasswordHistory
 from app.models.refresh_token import RefreshToken
 from app.models.revoked_token import RevokedToken
 from app.models.trusted_device import TrustedDevice
+from app.models.auth_otp import AuthOTP
 from app.models.user_profile import UserProfile
 from app.models.user import User
 from app.schemas.auth import (
@@ -31,7 +34,10 @@ from app.schemas.auth import (
     DeleteAccountRequest,
     ForgotPasswordRequest,
     LoginRequest,
+    LoginOTPRequest,
+    LoginOTPChallengeResponse,
     RegisterRequest,
+    SendSignupOTPRequest,
     ResetPasswordRequest,
     SessionInfoResponse,
     TokenPair,
@@ -39,11 +45,280 @@ from app.schemas.auth import (
     UserProfileResponse,
     UserProfileUpdateRequest,
     UserResponse,
+    VerifyLoginOTPRequest,
+    VerifySignupOTPRequest,
+    SignupOTPChallengeResponse,
 )
+from app.services.otp_delivery_service import otp_delivery_service
 from app.utils.storage import ALLOWED_AVATAR_CONTENT_TYPES, AVATAR_MAX_BYTES, save_avatar_bytes
 
 
 class AuthService:
+    EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+    def _normalize_phone(self, phone: str) -> str:
+        normalized = phone.strip()
+        if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid phone number format")
+        return normalized
+
+    def _generate_otp(self) -> str:
+        min_value = 10 ** (settings.otp_length - 1)
+        max_value = (10 ** settings.otp_length) - 1
+        return str(random.randint(min_value, max_value))
+
+    def _hash_otp(self, otp: str) -> str:
+        payload = f"{otp}:{settings.jwt_secret_key}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _create_otp_record(
+        self,
+        db: Session,
+        *,
+        user_id: int | None,
+        purpose: str,
+        channel: str,
+        recipient: str,
+        context: dict,
+    ) -> tuple[AuthOTP, str]:
+        otp_code = self._generate_otp()
+        challenge_id = secrets.token_urlsafe(24)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        record = AuthOTP(
+            user_id=user_id,
+            purpose=purpose,
+            channel=channel,
+            recipient=recipient,
+            challenge_id=challenge_id,
+            otp_hash=self._hash_otp(otp_code),
+            context_json=json.dumps(context),
+            attempts=0,
+            max_attempts=settings.otp_max_attempts,
+            expires_at=now + timedelta(minutes=settings.otp_expire_minutes),
+        )
+        db.add(record)
+        return record, otp_code
+
+    def _load_otp_context(self, record: AuthOTP) -> dict:
+        if not record.context_json:
+            return {}
+        try:
+            return json.loads(record.context_json)
+        except json.JSONDecodeError:
+            return {}
+
+    def _find_active_otp(self, db: Session, *, challenge_id: str, purpose: str) -> AuthOTP:
+        record = db.scalar(select(AuthOTP).where(AuthOTP.challenge_id == challenge_id, AuthOTP.purpose == purpose))
+        if not record:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP challenge")
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if record.consumed_at is not None or record.verified_at is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP challenge already used")
+        if record.expires_at < now:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP challenge expired")
+        if record.attempts >= record.max_attempts:
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="OTP attempts exceeded")
+        return record
+
+    def _verify_otp_code(self, db: Session, record: AuthOTP, otp: str) -> None:
+        if self._hash_otp(otp) != record.otp_hash:
+            record.attempts += 1
+            db.add(record)
+            db.commit()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP")
+        record.verified_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.add(record)
+
+    def _consume_otp_record(self, db: Session, record: AuthOTP) -> None:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        record.consumed_at = now
+        if record.verified_at is None:
+            record.verified_at = now
+        db.add(record)
+
+    def _issue_auth_response(
+        self,
+        db: Session,
+        user: User,
+        *,
+        source: str,
+        ip_address: str | None,
+        user_agent: str | None,
+        request_id: str | None,
+    ) -> AuthResponse:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        user.last_login_at = now
+        tokens = self._issue_tokens(db, user, ip_address=ip_address, user_agent=user_agent)
+        self._write_audit(
+            db,
+            actor_user_id=user.id,
+            action="auth.login",
+            target_type="user",
+            target_id=str(user.id),
+            metadata={"email": user.email, "source": source},
+            ip_address=ip_address,
+            user_agent=user_agent,
+            request_id=request_id,
+        )
+        self._record_login_attempt(
+            db,
+            user=user,
+            email=user.email,
+            success=True,
+            failure_reason=None,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            metadata={"source": source},
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+        return AuthResponse(user=self._merge_user_response(user, profile), tokens=tokens)
+
+    def send_signup_otp(self, db: Session, payload: SendSignupOTPRequest) -> SignupOTPChallengeResponse:
+        email = payload.email.lower().strip()
+        phone = self._normalize_phone(payload.phone)
+
+        existing_by_email = db.scalar(select(User).where(User.email == email, User.deleted_at.is_(None)))
+        if existing_by_email:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+        existing_by_phone = db.scalar(select(User).where(User.phone == phone, User.deleted_at.is_(None)))
+        if existing_by_phone:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Phone already registered")
+
+        context = {"email": email, "phone": phone}
+        email_record, email_otp = self._create_otp_record(
+            db,
+            user_id=None,
+            purpose="signup",
+            channel="email",
+            recipient=email,
+            context=context,
+        )
+        phone_record, phone_otp = self._create_otp_record(
+            db,
+            user_id=None,
+            purpose="signup",
+            channel="phone",
+            recipient=phone,
+            context=context,
+        )
+
+        try:
+            otp_delivery_service.send_email_otp(email, email_otp, settings.otp_expire_minutes)
+            otp_delivery_service.send_phone_otp(phone, phone_otp, settings.otp_expire_minutes)
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OTP delivery failed: {exc}")
+
+        db.commit()
+        return SignupOTPChallengeResponse(
+            email_challenge_id=email_record.challenge_id,
+            phone_challenge_id=phone_record.challenge_id,
+            expires_in_seconds=settings.otp_expire_minutes * 60,
+        )
+
+    def verify_signup_otp(self, db: Session, payload: VerifySignupOTPRequest) -> None:
+        email = payload.email.lower().strip()
+        phone = self._normalize_phone(payload.phone)
+
+        email_record = self._find_active_otp(db, challenge_id=payload.email_challenge_id, purpose="signup")
+        phone_record = self._find_active_otp(db, challenge_id=payload.phone_challenge_id, purpose="signup")
+
+        if email_record.channel != "email" or phone_record.channel != "phone":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP channel mapping")
+        if email_record.recipient != email or phone_record.recipient != phone:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP recipient mismatch")
+
+        email_context = self._load_otp_context(email_record)
+        phone_context = self._load_otp_context(phone_record)
+        if email_context.get("phone") != phone or phone_context.get("email") != email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP pair mismatch")
+
+        self._verify_otp_code(db, email_record, payload.email_otp)
+        self._verify_otp_code(db, phone_record, payload.phone_otp)
+        db.commit()
+
+    def login_with_otp(self, db: Session, payload: LoginOTPRequest) -> LoginOTPChallengeResponse:
+        identifier = payload.identifier.strip().lower()
+        user: User | None = None
+        channel = "email"
+        recipient = identifier
+
+        if self.EMAIL_PATTERN.fullmatch(identifier):
+            user = db.scalar(select(User).where(User.email == identifier))
+            channel = "email"
+            recipient = identifier
+        else:
+            phone = self._normalize_phone(payload.identifier)
+            user = db.scalar(select(User).where(User.phone == phone))
+            channel = "phone"
+            recipient = phone
+
+        if not user:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        if not user.is_active or user.deleted_at is not None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
+        if not verify_password(payload.password, user.hashed_password):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+
+        otp_record, otp_code = self._create_otp_record(
+            db,
+            user_id=user.id,
+            purpose="login",
+            channel=channel,
+            recipient=recipient,
+            context={"user_id": user.id},
+        )
+
+        try:
+            if channel == "email":
+                otp_delivery_service.send_email_otp(recipient, otp_code, settings.otp_expire_minutes)
+            else:
+                otp_delivery_service.send_phone_otp(recipient, otp_code, settings.otp_expire_minutes)
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OTP delivery failed: {exc}")
+
+        db.commit()
+        return LoginOTPChallengeResponse(
+            challenge_id=otp_record.challenge_id,
+            channel=channel,
+            expires_in_seconds=settings.otp_expire_minutes * 60,
+        )
+
+    def verify_login_otp(
+        self,
+        db: Session,
+        payload: VerifyLoginOTPRequest,
+        *,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+        request_id: str | None = None,
+    ) -> AuthResponse:
+        record = self._find_active_otp(db, challenge_id=payload.challenge_id, purpose="login")
+        self._verify_otp_code(db, record, payload.otp)
+        self._consume_otp_record(db, record)
+
+        user = db.scalar(select(User).where(User.id == record.user_id))
+        if not user:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        if not user.is_active or user.deleted_at is not None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
+
+        return self._issue_auth_response(
+            db,
+            user,
+            source="login_otp",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            request_id=request_id,
+        )
+
     def _get_or_create_profile(self, db: Session, user: User) -> UserProfile:
         profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
         if profile is None:
@@ -133,19 +408,31 @@ class AuthService:
         db: Session,
         payload: RegisterRequest,
         *,
+        otp_payload: VerifySignupOTPRequest,
         ip_address: str | None = None,
         user_agent: str | None = None,
         request_id: str | None = None,
     ) -> AuthResponse:
+        self.verify_signup_otp(db, otp_payload)
+
         normalized_email = payload.email.lower().strip()
+        normalized_phone = self._normalize_phone(otp_payload.phone)
+        if normalized_email != otp_payload.email.lower().strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email mismatch with OTP verification")
+
         existing = db.scalar(select(User).where(User.email == normalized_email))
         if existing:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+        existing_by_phone = db.scalar(select(User).where(User.phone == normalized_phone, User.deleted_at.is_(None)))
+        if existing_by_phone:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Phone already registered")
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         user = User(
             email=normalized_email,
             full_name=payload.full_name,
+            phone=normalized_phone,
             hashed_password=get_password_hash(payload.password),
             role="user",
             failed_login_attempts=0,
@@ -156,9 +443,18 @@ class AuthService:
         )
         db.add(user)
         db.flush()
-        profile = UserProfile(user_id=user.id)
+        profile = UserProfile(user_id=user.id, mobile=normalized_phone)
         db.add(profile)
         self._record_password_history(db, user.id, user.hashed_password)
+
+        self._consume_otp_record(
+            db,
+            self._find_active_otp(db, challenge_id=otp_payload.email_challenge_id, purpose="signup"),
+        )
+        self._consume_otp_record(
+            db,
+            self._find_active_otp(db, challenge_id=otp_payload.phone_challenge_id, purpose="signup"),
+        )
 
         tokens = self._issue_tokens(db, user, ip_address=ip_address, user_agent=user_agent)
         self._write_audit(
@@ -194,124 +490,11 @@ class AuthService:
         ip_address: str | None = None,
         user_agent: str | None = None,
         request_id: str | None = None,
-    ) -> AuthResponse:
-        normalized_email = payload.email.lower().strip()
-        user = db.scalar(select(User).where(User.email == normalized_email))
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-
-        if not user:
-            self._record_login_attempt(
-                db,
-                user=None,
-                email=normalized_email,
-                success=False,
-                failure_reason="invalid_credentials",
-                ip_address=ip_address,
-                user_agent=user_agent,
-                metadata={"source": "login"},
-            )
-            db.commit()
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-        if not user.is_active or user.deleted_at is not None:
-            self._record_login_attempt(
-                db,
-                user=user,
-                email=user.email,
-                success=False,
-                failure_reason="inactive_account",
-                ip_address=ip_address,
-                user_agent=user_agent,
-                metadata={"source": "login"},
-            )
-            db.commit()
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
-
-        if user.locked_until and user.locked_until > now:
-            self._record_login_attempt(
-                db,
-                user=user,
-                email=user.email,
-                success=False,
-                failure_reason="account_locked",
-                ip_address=ip_address,
-                user_agent=user_agent,
-                metadata={"locked_until": user.locked_until.isoformat()},
-            )
-            db.commit()
-            raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="Account is temporarily locked")
-
-        if user.locked_until and user.locked_until <= now:
-            user.locked_until = None
-            user.failed_login_attempts = 0
-
-        if not verify_password(payload.password, user.hashed_password):
-            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-            lock_triggered = user.failed_login_attempts >= settings.login_lock_threshold
-            if lock_triggered:
-                user.locked_until = now + timedelta(minutes=settings.login_lock_duration_minutes)
-
-            self._record_login_attempt(
-                db,
-                user=user,
-                email=user.email,
-                success=False,
-                failure_reason="invalid_credentials",
-                ip_address=ip_address,
-                user_agent=user_agent,
-                metadata={
-                    "attempts": user.failed_login_attempts,
-                    "locked": lock_triggered,
-                    "source": "login",
-                },
-            )
-            self._write_audit(
-                db,
-                actor_user_id=user.id,
-                action="auth.login_failed",
-                target_type="user",
-                target_id=str(user.id),
-                metadata={"email": user.email, "reason": "invalid_credentials"},
-                severity="warning",
-                ip_address=ip_address,
-                user_agent=user_agent,
-                request_id=request_id,
-            )
-            db.add(user)
-            db.commit()
-            if lock_triggered:
-                raise HTTPException(status_code=status.HTTP_423_LOCKED, detail="Account is temporarily locked")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-
-        user.failed_login_attempts = 0
-        user.locked_until = None
-        user.last_login_at = now
-        tokens = self._issue_tokens(db, user, ip_address=ip_address, user_agent=user_agent)
-        self._write_audit(
+    ) -> LoginOTPChallengeResponse:
+        return self.login_with_otp(
             db,
-            actor_user_id=user.id,
-            action="auth.login",
-            target_type="user",
-            target_id=str(user.id),
-            metadata={"email": user.email},
-            ip_address=ip_address,
-            user_agent=user_agent,
-            request_id=request_id,
+            LoginOTPRequest(identifier=payload.identifier, password=payload.password),
         )
-        self._record_login_attempt(
-            db,
-            user=user,
-            email=user.email,
-            success=True,
-            failure_reason=None,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            metadata={"source": "login"},
-        )
-        db.commit()
-        db.refresh(user)
-        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
-        return AuthResponse(user=self._merge_user_response(user, profile), tokens=tokens)
 
     def refresh_access_token(self, db: Session, refresh_token: str) -> TokenPair:
         payload = decode_token(refresh_token)

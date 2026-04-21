@@ -37,6 +37,23 @@ class Settings(BaseSettings):
     max_active_sessions_per_user: int = Field(default=5, ge=1, le=20)
     login_lock_threshold: int = Field(default=5, ge=1, le=20)
     login_lock_duration_minutes: int = Field(default=15, ge=1, le=1440)
+    otp_length: int = Field(default=6, ge=4, le=8)
+    otp_expire_minutes: int = Field(default=10, ge=1, le=60)
+    otp_max_attempts: int = Field(default=5, ge=1, le=10)
+    otp_resend_cooldown_seconds: int = Field(default=30, ge=0, le=300)
+
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "Algo Trading Platform"
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
 
     delta_api_key: str = ""
     delta_api_secret: str = ""
