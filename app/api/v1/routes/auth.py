@@ -10,10 +10,11 @@ from app.schemas.auth import (
     AuthResponse,
     ChangePasswordRequest,
     DeleteAccountRequest,
+    ForgotPasswordOTPChallengeResponse,
+    ForgotPasswordOTPRequest,
     ForgotPasswordRequest,
     LoginRequest,
     LoginOTPChallengeResponse,
-    LoginOTPRequest,
     RefreshTokenRequest,
     ResetPasswordRequest,
     SessionInfoResponse,
@@ -61,7 +62,12 @@ def signup(
     ip_address, user_agent, request_id = _request_metadata(request)
     return auth_service.register(
         db,
-        RegisterRequest(email=payload.email, full_name=payload.full_name, password=payload.password),
+        RegisterRequest(
+            email=payload.email,
+            full_name=payload.full_name,
+            username=payload.username,
+            password=payload.password,
+        ),
         otp_payload=VerifySignupOTPRequest(
             email=payload.email,
             phone=payload.phone,
@@ -94,12 +100,6 @@ def verify_signup_otp(request: Request, response: Response, payload: VerifySignu
 def login(request: Request, response: Response, payload: LoginRequest, db: Session = Depends(get_db)):
     ip_address, user_agent, request_id = _request_metadata(request)
     return auth_service.login(db, payload, ip_address=ip_address, user_agent=user_agent, request_id=request_id)
-
-
-@router.post("/login/send-otp", response_model=LoginOTPChallengeResponse)
-@limiter.limit("10/minute")
-def login_send_otp(request: Request, response: Response, payload: LoginOTPRequest, db: Session = Depends(get_db)):
-    return auth_service.login_with_otp(db, payload)
 
 
 @router.post("/login/verify-otp", response_model=AuthResponse)
@@ -152,14 +152,11 @@ def delete_account(
     return MessageResponse(message="Account deleted successfully")
 
 
-@router.post("/forgot-password", response_model=MessageResponse)
+@router.post("/forgot-password", response_model=ForgotPasswordOTPChallengeResponse)
 @limiter.limit("5/minute")
-def forgot_password(request: Request, response: Response, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(request: Request, response: Response, payload: ForgotPasswordOTPRequest, db: Session = Depends(get_db)):
     ip_address, user_agent, request_id = _request_metadata(request)
-    debug_token = auth_service.forgot_password(db, payload, ip_address=ip_address, user_agent=user_agent, request_id=request_id)
-    if settings.environment != "production" and debug_token:
-        response.headers["X-Debug-Reset-Token"] = debug_token
-    return MessageResponse(message="If the account exists, reset instructions have been generated")
+    return auth_service.forgot_password(db, payload, ip_address=ip_address, user_agent=user_agent, request_id=request_id)
 
 
 @router.post("/reset-password", response_model=MessageResponse)

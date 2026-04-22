@@ -11,6 +11,7 @@ PASSWORD_COMPLEXITY_PATTERN = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[
 class RegisterRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=2, max_length=255)
+    username: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=128)
 
     @field_validator("full_name")
@@ -29,6 +30,14 @@ class RegisterRequest(BaseModel):
                 "Password must include at least one uppercase letter, one lowercase letter, one number, and one special character"
             )
         return value
+
+    @field_validator("username")
+    @classmethod
+    def normalize_required_username(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9._-]{3,100}", normalized):
+            raise ValueError("Username can only include lowercase letters, numbers, dot, underscore and hyphen")
+        return normalized
 
 
 class LoginRequest(BaseModel):
@@ -70,13 +79,18 @@ class SignupOTPChallengeResponse(BaseModel):
     email_challenge_id: str
     phone_challenge_id: str
     expires_in_seconds: int
+    debug_email_otp: str | None = None
+    debug_phone_otp: str | None = None
 
 
 class SignupCompleteRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=2, max_length=255)
+    username: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=128)
+    confirm_password: str = Field(min_length=8, max_length=128)
     phone: str = Field(min_length=8, max_length=20)
+    terms_accepted: bool
     email_challenge_id: str = Field(min_length=16, max_length=120)
     email_otp: str = Field(min_length=4, max_length=8)
     phone_challenge_id: str = Field(min_length=16, max_length=120)
@@ -99,6 +113,23 @@ class SignupCompleteRequest(BaseModel):
             )
         return value
 
+    @field_validator("username")
+    @classmethod
+    def normalize_signup_complete_username(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9._-]{3,100}", normalized):
+            raise ValueError("Username can only include lowercase letters, numbers, dot, underscore and hyphen")
+        return normalized
+
+    @field_validator("confirm_password")
+    @classmethod
+    def validate_signup_complete_confirm_password_complexity(cls, value: str) -> str:
+        if not PASSWORD_COMPLEXITY_PATTERN.match(value):
+            raise ValueError(
+                "Password must include at least one uppercase letter, one lowercase letter, one number, and one special character"
+            )
+        return value
+
     @field_validator("phone")
     @classmethod
     def normalize_signup_complete_phone(cls, value: str) -> str:
@@ -106,6 +137,21 @@ class SignupCompleteRequest(BaseModel):
         if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
             raise ValueError("Phone number must be in valid international format")
         return normalized
+
+    @field_validator("terms_accepted")
+    @classmethod
+    def validate_terms_accepted(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("You must accept terms and conditions")
+        return value
+
+    @field_validator("confirm_password")
+    @classmethod
+    def validate_password_match(cls, value: str, info):
+        password = info.data.get("password")
+        if password and value != password:
+            raise ValueError("Password and confirm password must match")
+        return value
 
 
 class LoginOTPRequest(BaseModel):
@@ -122,6 +168,7 @@ class LoginOTPChallengeResponse(BaseModel):
     challenge_id: str
     channel: Literal["email", "phone"]
     expires_in_seconds: int
+    debug_otp: str | None = None
 
 
 class RefreshTokenRequest(BaseModel):
@@ -132,8 +179,34 @@ class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
 
+class ForgotPasswordOTPRequest(BaseModel):
+    email: EmailStr
+    phone: str = Field(min_length=8, max_length=20)
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_forgot_password_phone(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
+            raise ValueError("Phone number must be in valid international format")
+        return normalized
+
+
+class ForgotPasswordOTPChallengeResponse(BaseModel):
+    email_challenge_id: str
+    phone_challenge_id: str
+    expires_in_seconds: int
+    debug_email_otp: str | None = None
+    debug_phone_otp: str | None = None
+
+
 class ResetPasswordRequest(BaseModel):
-    token: str = Field(min_length=16, max_length=256)
+    email: EmailStr
+    phone: str = Field(min_length=8, max_length=20)
+    email_challenge_id: str = Field(min_length=16, max_length=120)
+    email_otp: str = Field(min_length=4, max_length=8)
+    phone_challenge_id: str = Field(min_length=16, max_length=120)
+    phone_otp: str = Field(min_length=4, max_length=8)
     new_password: str = Field(min_length=8, max_length=128)
 
     @field_validator("new_password")
@@ -144,6 +217,14 @@ class ResetPasswordRequest(BaseModel):
                 "Password must include at least one uppercase letter, one lowercase letter, one number, and one special character"
             )
         return value
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_reset_phone(cls, value: str) -> str:
+        normalized = value.strip()
+        if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
+            raise ValueError("Phone number must be in valid international format")
+        return normalized
 
 
 class ChangePasswordRequest(BaseModel):

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     otp_expire_minutes: int = Field(default=10, ge=1, le=60)
     otp_max_attempts: int = Field(default=5, ge=1, le=10)
     otp_resend_cooldown_seconds: int = Field(default=30, ge=0, le=300)
+    otp_phone_default_country_code: str = ""
 
     smtp_host: str = ""
     smtp_port: int = 587

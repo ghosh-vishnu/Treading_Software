@@ -33,6 +33,8 @@ from app.schemas.auth import (
     ChangePasswordRequest,
     DeleteAccountRequest,
     ForgotPasswordRequest,
+    ForgotPasswordOTPRequest,
+    ForgotPasswordOTPChallengeResponse,
     LoginRequest,
     LoginOTPRequest,
     LoginOTPChallengeResponse,
@@ -57,9 +59,16 @@ class AuthService:
     EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
     def _normalize_phone(self, phone: str) -> str:
-        normalized = phone.strip()
+        normalized = phone.strip().replace(" ", "")
+        if not normalized.startswith("+") and settings.otp_phone_default_country_code:
+            country_code = settings.otp_phone_default_country_code.strip()
+            if not country_code.startswith("+"):
+                country_code = f"+{country_code}"
+            normalized = f"{country_code}{normalized}"
         if not re.fullmatch(r"^\+?[1-9]\d{7,14}$", normalized):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid phone number format")
+        if not normalized.startswith("+"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone must be in E.164 format, e.g. +919999999999")
         return normalized
 
     def _generate_otp(self) -> str:
@@ -107,12 +116,21 @@ class AuthService:
         except json.JSONDecodeError:
             return {}
 
-    def _find_active_otp(self, db: Session, *, challenge_id: str, purpose: str) -> AuthOTP:
+    def _find_active_otp(
+        self,
+        db: Session,
+        *,
+        challenge_id: str,
+        purpose: str,
+        allow_verified: bool = False,
+    ) -> AuthOTP:
         record = db.scalar(select(AuthOTP).where(AuthOTP.challenge_id == challenge_id, AuthOTP.purpose == purpose))
         if not record:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP challenge")
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        if record.consumed_at is not None or record.verified_at is not None:
+        if record.consumed_at is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP challenge already used")
+        if not allow_verified and record.verified_at is not None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP challenge already used")
         if record.expires_at < now:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP challenge expired")
@@ -121,6 +139,8 @@ class AuthService:
         return record
 
     def _verify_otp_code(self, db: Session, record: AuthOTP, otp: str) -> None:
+        if record.verified_at is not None:
+            return
         if self._hash_otp(otp) != record.otp_hash:
             record.attempts += 1
             db.add(record)
@@ -208,26 +228,53 @@ class AuthService:
             context=context,
         )
 
+        email_delivery_error: str | None = None
+        phone_delivery_error: str | None = None
+
         try:
             otp_delivery_service.send_email_otp(email, email_otp, settings.otp_expire_minutes)
+        except Exception as exc:
+            email_delivery_error = str(exc)
+
+        try:
             otp_delivery_service.send_phone_otp(phone, phone_otp, settings.otp_expire_minutes)
         except Exception as exc:
+            phone_delivery_error = str(exc)
+
+        if settings.environment == "production" and (email_delivery_error or phone_delivery_error):
             db.rollback()
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OTP delivery failed: {exc}")
+            error_parts = []
+            if email_delivery_error:
+                error_parts.append(f"email: {email_delivery_error}")
+            if phone_delivery_error:
+                error_parts.append(f"phone: {phone_delivery_error}")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OTP delivery failed ({'; '.join(error_parts)})")
 
         db.commit()
         return SignupOTPChallengeResponse(
             email_challenge_id=email_record.challenge_id,
             phone_challenge_id=phone_record.challenge_id,
             expires_in_seconds=settings.otp_expire_minutes * 60,
+            debug_email_otp=email_otp if settings.environment != "production" else None,
+            debug_phone_otp=phone_otp if settings.environment != "production" else None,
         )
 
     def verify_signup_otp(self, db: Session, payload: VerifySignupOTPRequest) -> None:
         email = payload.email.lower().strip()
         phone = self._normalize_phone(payload.phone)
 
-        email_record = self._find_active_otp(db, challenge_id=payload.email_challenge_id, purpose="signup")
-        phone_record = self._find_active_otp(db, challenge_id=payload.phone_challenge_id, purpose="signup")
+        email_record = self._find_active_otp(
+            db,
+            challenge_id=payload.email_challenge_id,
+            purpose="signup",
+            allow_verified=True,
+        )
+        phone_record = self._find_active_otp(
+            db,
+            challenge_id=payload.phone_challenge_id,
+            purpose="signup",
+            allow_verified=True,
+        )
 
         if email_record.channel != "email" or phone_record.channel != "phone":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP channel mapping")
@@ -275,20 +322,25 @@ class AuthService:
             context={"user_id": user.id},
         )
 
+        delivery_error: str | None = None
         try:
             if channel == "email":
                 otp_delivery_service.send_email_otp(recipient, otp_code, settings.otp_expire_minutes)
             else:
                 otp_delivery_service.send_phone_otp(recipient, otp_code, settings.otp_expire_minutes)
         except Exception as exc:
+            delivery_error = str(exc)
+
+        if settings.environment == "production" and delivery_error:
             db.rollback()
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OTP delivery failed: {exc}")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OTP delivery failed: {delivery_error}")
 
         db.commit()
         return LoginOTPChallengeResponse(
             challenge_id=otp_record.challenge_id,
             channel=channel,
             expires_in_seconds=settings.otp_expire_minutes * 60,
+            debug_otp=otp_code if settings.environment != "production" else None,
         )
 
     def verify_login_otp(
@@ -413,16 +465,44 @@ class AuthService:
         user_agent: str | None = None,
         request_id: str | None = None,
     ) -> AuthResponse:
-        self.verify_signup_otp(db, otp_payload)
-
         normalized_email = payload.email.lower().strip()
         normalized_phone = self._normalize_phone(otp_payload.phone)
         if normalized_email != otp_payload.email.lower().strip():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email mismatch with OTP verification")
 
+        email_record = self._find_active_otp(
+            db,
+            challenge_id=otp_payload.email_challenge_id,
+            purpose="signup",
+            allow_verified=True,
+        )
+        phone_record = self._find_active_otp(
+            db,
+            challenge_id=otp_payload.phone_challenge_id,
+            purpose="signup",
+            allow_verified=True,
+        )
+
+        if email_record.channel != "email" or phone_record.channel != "phone":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP channel mapping")
+        if email_record.recipient != normalized_email or phone_record.recipient != normalized_phone:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP recipient mismatch")
+
+        email_context = self._load_otp_context(email_record)
+        phone_context = self._load_otp_context(phone_record)
+        if email_context.get("phone") != normalized_phone or phone_context.get("email") != normalized_email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP pair mismatch")
+
+        self._verify_otp_code(db, email_record, otp_payload.email_otp)
+        self._verify_otp_code(db, phone_record, otp_payload.phone_otp)
+
         existing = db.scalar(select(User).where(User.email == normalized_email))
         if existing:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+
+        existing_by_username = db.scalar(select(User).where(User.username == payload.username, User.deleted_at.is_(None)))
+        if existing_by_username:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already in use")
 
         existing_by_phone = db.scalar(select(User).where(User.phone == normalized_phone, User.deleted_at.is_(None)))
         if existing_by_phone:
@@ -432,6 +512,7 @@ class AuthService:
         user = User(
             email=normalized_email,
             full_name=payload.full_name,
+            username=payload.username,
             phone=normalized_phone,
             hashed_password=get_password_hash(payload.password),
             role="user",
@@ -447,14 +528,8 @@ class AuthService:
         db.add(profile)
         self._record_password_history(db, user.id, user.hashed_password)
 
-        self._consume_otp_record(
-            db,
-            self._find_active_otp(db, challenge_id=otp_payload.email_challenge_id, purpose="signup"),
-        )
-        self._consume_otp_record(
-            db,
-            self._find_active_otp(db, challenge_id=otp_payload.phone_challenge_id, purpose="signup"),
-        )
+        self._consume_otp_record(db, email_record)
+        self._consume_otp_record(db, phone_record)
 
         tokens = self._issue_tokens(db, user, ip_address=ip_address, user_agent=user_agent)
         self._write_audit(
@@ -605,39 +680,82 @@ class AuthService:
     def forgot_password(
         self,
         db: Session,
-        payload: ForgotPasswordRequest,
+        payload: ForgotPasswordOTPRequest,
         *,
         ip_address: str | None = None,
         user_agent: str | None = None,
         request_id: str | None = None,
-    ) -> str | None:
-        user = db.scalar(select(User).where(User.email == payload.email.lower().strip()))
-        if not user or user.deleted_at is not None:
-            return None
-
-        raw_token = secrets.token_urlsafe(48)
-        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-
-        db.add(
-            PasswordResetToken(
-                user_id=user.id,
-                token_hash=token_hash,
-                expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=30),
+    ) -> ForgotPasswordOTPChallengeResponse:
+        email = payload.email.lower().strip()
+        phone = self._normalize_phone(payload.phone)
+        user = db.scalar(select(User).where(User.email == email, User.deleted_at.is_(None)))
+        if not user:
+            return ForgotPasswordOTPChallengeResponse(
+                email_challenge_id="",
+                phone_challenge_id="",
+                expires_in_seconds=settings.otp_expire_minutes * 60,
             )
+
+        if user.phone and self._normalize_phone(user.phone) != phone:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number does not match account")
+
+        context = {"email": email, "phone": phone, "user_id": user.id}
+        email_record, email_otp = self._create_otp_record(
+            db,
+            user_id=user.id,
+            purpose="forgot_password",
+            channel="email",
+            recipient=email,
+            context=context,
         )
+        phone_record, phone_otp = self._create_otp_record(
+            db,
+            user_id=user.id,
+            purpose="forgot_password",
+            channel="phone",
+            recipient=phone,
+            context=context,
+        )
+
+        email_delivery_error: str | None = None
+        phone_delivery_error: str | None = None
+        try:
+            otp_delivery_service.send_email_otp(email, email_otp, settings.otp_expire_minutes)
+        except Exception as exc:
+            email_delivery_error = str(exc)
+        try:
+            otp_delivery_service.send_phone_otp(phone, phone_otp, settings.otp_expire_minutes)
+        except Exception as exc:
+            phone_delivery_error = str(exc)
+
+        if settings.environment == "production" and (email_delivery_error or phone_delivery_error):
+            db.rollback()
+            error_parts = []
+            if email_delivery_error:
+                error_parts.append(f"email: {email_delivery_error}")
+            if phone_delivery_error:
+                error_parts.append(f"phone: {phone_delivery_error}")
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"OTP delivery failed ({'; '.join(error_parts)})")
+
+        db.commit()
         self._write_audit(
             db,
             actor_user_id=user.id,
             action="auth.forgot_password",
             target_type="user",
             target_id=str(user.id),
-            metadata={"email": user.email},
+            metadata={"email": user.email, "phone": phone},
             ip_address=ip_address,
             user_agent=user_agent,
             request_id=request_id,
         )
-        db.commit()
-        return raw_token if settings.environment != "production" else None
+        return ForgotPasswordOTPChallengeResponse(
+            email_challenge_id=email_record.challenge_id,
+            phone_challenge_id=phone_record.challenge_id,
+            expires_in_seconds=settings.otp_expire_minutes * 60,
+            debug_email_otp=email_otp if settings.environment != "production" else None,
+            debug_phone_otp=phone_otp if settings.environment != "production" else None,
+        )
 
     def reset_password(
         self,
@@ -648,15 +766,43 @@ class AuthService:
         user_agent: str | None = None,
         request_id: str | None = None,
     ) -> None:
-        token_hash = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
-        reset_record = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash))
+        email = payload.email.lower().strip()
+        phone = self._normalize_phone(payload.phone)
+        user = db.scalar(select(User).where(User.email == email, User.deleted_at.is_(None)))
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        if not reset_record or reset_record.is_used or reset_record.expires_at < now:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
-
-        user = db.scalar(select(User).where(User.id == reset_record.user_id))
         if not user:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid account details")
+
+        if not user.phone or self._normalize_phone(user.phone) != phone:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number does not match account")
+
+        email_record = self._find_active_otp(
+            db,
+            challenge_id=payload.email_challenge_id,
+            purpose="forgot_password",
+            allow_verified=True,
+        )
+        phone_record = self._find_active_otp(
+            db,
+            challenge_id=payload.phone_challenge_id,
+            purpose="forgot_password",
+            allow_verified=True,
+        )
+
+        if email_record.channel != "email" or phone_record.channel != "phone":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP channel mapping")
+        if email_record.recipient != email or phone_record.recipient != phone:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP recipient mismatch")
+
+        email_context = self._load_otp_context(email_record)
+        phone_context = self._load_otp_context(phone_record)
+        if email_context.get("phone") != phone or phone_context.get("email") != email:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP pair mismatch")
+
+        self._verify_otp_code(db, email_record, payload.email_otp)
+        self._verify_otp_code(db, phone_record, payload.phone_otp)
+        self._consume_otp_record(db, email_record)
+        self._consume_otp_record(db, phone_record)
 
         if self._is_password_reused(db, user.id, payload.new_password):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password was used recently")
@@ -676,14 +822,13 @@ class AuthService:
             action="auth.reset_password",
             target_type="user",
             target_id=str(user.id),
-            metadata={"email": user.email},
+            metadata={"email": user.email, "phone": phone},
             severity="warning",
             ip_address=ip_address,
             user_agent=user_agent,
             request_id=request_id,
         )
         db.add(user)
-        db.add(reset_record)
         db.commit()
 
     def list_sessions(self, db: Session, user: User) -> list[SessionInfoResponse]:

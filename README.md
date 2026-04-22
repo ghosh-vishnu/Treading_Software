@@ -16,11 +16,12 @@ Signup and login are OTP-based.
 
 Auth flow:
 - Signup: `/api/v1/auth/signup/send-otp` -> `/api/v1/auth/signup/verify-otp` -> `/api/v1/auth/signup`
-- Login: `/api/v1/auth/login` or `/api/v1/auth/login/send-otp` -> `/api/v1/auth/login/verify-otp`
+- Login: `/api/v1/auth/login` -> `/api/v1/auth/login/verify-otp`
 
 ## Local Run
 
 1. Copy `.env.example` to `.env`.
+	- For production baseline, copy `.env.production.example` to `.env` and fill real secrets/hosts.
 2. Install dependencies.
 3. Run migrations:
 
