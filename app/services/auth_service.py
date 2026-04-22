@@ -20,7 +20,6 @@ from app.core.security import (
 )
 from app.models.audit_log import AuditLog
 from app.models.login_attempt import LoginAttempt
-from app.models.password_reset_token import PasswordResetToken
 from app.models.password_history import PasswordHistory
 from app.models.refresh_token import RefreshToken
 from app.models.revoked_token import RevokedToken
@@ -812,7 +811,6 @@ class AuthService:
         user.tokens_revoked_at = now
         user.failed_login_attempts = 0
         user.locked_until = None
-        reset_record.is_used = True
         self._revoke_all_user_sessions(db, user, reason="password_reset", revoke_access_tokens=False)
         self._record_password_history(db, user.id, user.hashed_password)
         self._prune_password_history(db, user.id)

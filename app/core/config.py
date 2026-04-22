@@ -12,18 +12,21 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
     log_level: str = "INFO"
 
-    api_host: str
-    api_port: int
+    # Defaults are set so tooling like Alembic can run even when `.env` is not present.
+    # Real deployments should override these via environment variables / `.env`.
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
 
-    database_url: str
-    redis_url: str
+    # Default to Postgres for local dev since migrations use Postgres syntax.
+    database_url: str = "postgresql://postgres:root@localhost:5432/treading"
+    redis_url: str = "redis://localhost:6379/0"
 
-    celery_broker_url: str
-    celery_result_backend: str
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
     websocket_heartbeat_seconds: int = 30
     market_data_poll_interval_seconds: int = 5
 
-    jwt_secret_key: str = Field(default="change-me-in-prod", min_length=32)
+    jwt_secret_key: str = Field(default="change-me-in-prod-please-replace-32", min_length=32)
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "algo-trading-api"
     jwt_audience: str = "algo-trading-clients"
@@ -58,7 +61,7 @@ class Settings(BaseSettings):
 
     delta_api_key: str = ""
     delta_api_secret: str = ""
-    delta_base_url: str
+    delta_base_url: str = "https://api.delta.exchange"
     delta_request_timeout_seconds: float = 15.0
     delta_symbol_type: str = "futures"
     broker_encryption_secret: str = Field(default="broker-encryption-secret-change-me", min_length=32)
@@ -76,7 +79,10 @@ class Settings(BaseSettings):
     enable_security_headers: bool = True
     hsts_max_age_seconds: int = Field(default=31536000, ge=0)
 
-    cors_origins: List[str]
+    cors_origins: List[str] = ["http://localhost:3000"]
+    cors_allow_credentials: bool = True
+    cors_allow_methods: List[str] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    cors_allow_headers: List[str] = ["Authorization", "Content-Type", "X-Request-Id"]
 
     admin_seed_email: str = ""
     admin_seed_password: str = ""

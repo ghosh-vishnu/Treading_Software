@@ -29,9 +29,11 @@ from app.services.websocket_manager import websocket_manager
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # For MVP we bootstrap schema at startup; migrations can be added in Phase 2.
-    Base.metadata.create_all(bind=engine)
-    _apply_schema_compatibility_patches()
+    # In development we bootstrap the schema for quick start.
+    # In staging/production rely on Alembic migrations (avoid implicit schema changes on startup).
+    if settings.environment == "development":
+        Base.metadata.create_all(bind=engine)
+        _apply_schema_compatibility_patches()
     _seed_admin_account()
     _seed_platform_settings()
     logger.info("Database schema ensured")
@@ -61,9 +63,10 @@ def _seed_admin_account() -> None:
             db.add(admin_user)
         else:
             admin_user.full_name = admin_name
-            admin_user.hashed_password = get_password_hash(settings.admin_seed_password)
             admin_user.role = "admin"
             admin_user.is_active = True
+            # Avoid silently resetting admin password on every restart.
+            # If you need to rotate it, use a dedicated admin reset flow/script.
             db.add(admin_user)
 
         db.commit()
@@ -177,6 +180,8 @@ def create_app() -> FastAPI:
             raise RuntimeError("JWT_SECRET_KEY must be a strong random secret in production")
         if "change-me" in settings.refresh_token_hash_secret or "replace-with" in settings.refresh_token_hash_secret:
             raise RuntimeError("REFRESH_TOKEN_HASH_SECRET must be a strong random secret in production")
+        if settings.cors_allow_credentials and any(origin.strip() == "*" for origin in settings.cors_origins):
+            raise RuntimeError("CORS_ORIGINS cannot include '*' when allow_credentials is enabled")
 
     app = FastAPI(
         title=settings.project_name,
@@ -191,9 +196,9 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_credentials=settings.cors_allow_credentials,
+        allow_methods=settings.cors_allow_methods,
+        allow_headers=settings.cors_allow_headers,
     )
 
     app.state.limiter = limiter
