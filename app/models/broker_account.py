@@ -1,11 +1,7 @@
 from datetime import datetime
-
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-
 from app.db.base import Base
-
-
 class BrokerAccount(Base):
     __tablename__ = "broker_accounts"
 
@@ -20,3 +16,4 @@ class BrokerAccount(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="broker_accounts")
+    
