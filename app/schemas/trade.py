@@ -17,6 +17,7 @@ class TradeCreateRequest(BaseModel):
     take_profit: Optional[Decimal] = Field(default=None, gt=0)
     is_copy_trade: bool = False
     leader_trade_id: Optional[int] = None
+    idempotency_key: Optional[str] = Field(default=None, min_length=1, max_length=80)
 
 
 class TradeResponse(BaseModel):
@@ -37,4 +38,5 @@ class TradeResponse(BaseModel):
     leader_trade_id: Optional[int]
     stop_loss: Optional[Decimal]
     take_profit: Optional[Decimal]
+    idempotency_key: Optional[str]
     created_at: datetime

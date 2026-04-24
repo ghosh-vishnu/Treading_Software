@@ -62,9 +62,31 @@ class Settings(BaseSettings):
     delta_api_key: str = ""
     delta_api_secret: str = ""
     delta_base_url: str = "https://api.delta.exchange"
+    delta_alternate_base_urls: List[str] = ["https://api.india.delta.exchange"]
     delta_request_timeout_seconds: float = 15.0
+    delta_connect_timeout_seconds: float = 5.0
+    delta_pool_timeout_seconds: float = 5.0
+    delta_max_connections: int = Field(default=20, ge=1, le=200)
+    delta_max_keepalive_connections: int = Field(default=10, ge=0, le=200)
+    delta_retry_attempts: int = Field(default=3, ge=1, le=8)
+    delta_retry_base_delay_seconds: float = Field(default=0.25, ge=0.01, le=5.0)
+    delta_retry_max_delay_seconds: float = Field(default=2.0, ge=0.01, le=30.0)
+    delta_circuit_breaker_enabled: bool = True
+    delta_circuit_breaker_failure_threshold: int = Field(default=5, ge=1, le=100)
+    delta_circuit_breaker_recovery_seconds: int = Field(default=30, ge=1, le=3600)
     delta_symbol_type: str = "futures"
+    delta_positions_underlying_symbols: List[str] = []
+    delta_preferred_balance_currencies: List[str] = ["USD", "USDT"]
+    delta_default_currency: str = "USD"
+    delta_quantity_precision: str = "0.0001"
+    delta_price_precision: str = "0.01"
+    mock_broker_default_balance: str = "100000"
+    mock_broker_default_currency: str = "USD"
+    mock_broker_default_order_status: str = "FILLED"
     broker_encryption_secret: str = Field(default="broker-encryption-secret-change-me", min_length=32)
+    broker_order_lock_ttl_seconds: int = Field(default=30, ge=1, le=300)
+    broker_idempotency_ttl_seconds: int = Field(default=86400, ge=60, le=2592000)
+    broker_require_redis_for_live_trading: bool = True
 
     zerodha_api_key: str = ""
     zerodha_api_secret: str = ""

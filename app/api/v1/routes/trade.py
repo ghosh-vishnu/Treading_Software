@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.rate_limit import limiter
@@ -18,9 +18,12 @@ def execute_trade(
     request: Request,
     response: Response,
     payload: TradeCreateRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if idempotency_key and not payload.idempotency_key:
+        payload = TradeCreateRequest.model_validate({**payload.model_dump(), "idempotency_key": idempotency_key})
     return trade_service.execute_trade(db, current_user, payload)
 
 

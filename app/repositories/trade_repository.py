@@ -16,6 +16,14 @@ class TradeRepository(Repository[Trade]):
         statement = select(Trade).where(Trade.user_id == user_id).order_by(Trade.created_at.desc())
         return list(self.db.scalars(statement).all())
 
+    def get_by_idempotency_key(self, user_id: int, broker: str, idempotency_key: str) -> Trade | None:
+        statement = select(Trade).where(
+            Trade.user_id == user_id,
+            Trade.broker == broker,
+            Trade.idempotency_key == idempotency_key,
+        )
+        return self.db.scalars(statement).one_or_none()
+
     def count_for_user_since(self, user_id: int, since: datetime) -> int:
         statement = select(func.count(Trade.id)).where(Trade.user_id == user_id, Trade.created_at >= since)
         return int(self.db.scalar(statement) or 0)

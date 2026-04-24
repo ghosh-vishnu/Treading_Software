@@ -25,6 +25,7 @@ class Trade(Base):
     leader_trade_id: Mapped[int | None] = mapped_column(ForeignKey("trades.id"), nullable=True)
     stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     take_profit: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     user = relationship("User", back_populates="trades")

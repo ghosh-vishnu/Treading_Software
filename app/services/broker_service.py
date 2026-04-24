@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.brokers.base import BrokerClient
 from app.brokers.delta_exchange import MockBroker
 from app.brokers.factory import get_broker_client
+from app.core.config import settings
 from app.core.security import decrypt_sensitive_value, encrypt_sensitive_value
 from app.models.broker_account import BrokerAccount
 from app.models.user import User
@@ -42,6 +43,10 @@ class BrokerService:
 
     @classmethod
     def _extract_error_code(cls, exc: Exception) -> str | None:
+        structured_code = getattr(exc, "error_code", None)
+        if structured_code:
+            return str(structured_code)
+
         payload = cls._extract_error_payload(exc)
         if not payload:
             return None
@@ -82,6 +87,14 @@ class BrokerService:
 
     @staticmethod
     def _extract_error_detail(exc: Exception) -> str | None:
+        structured_detail = getattr(exc, "detail", None)
+        structured_code = getattr(structured_detail, "code", None)
+        structured_context = getattr(structured_detail, "context", None)
+        if structured_code and structured_context:
+            return f"{structured_code}: {structured_context}"
+        if structured_code:
+            return str(structured_code)
+
         response = getattr(exc, "response", None)
         text = getattr(response, "text", None)
         if not text:
@@ -133,24 +146,33 @@ class BrokerService:
             candidate_client = get_broker_client(payload.broker_name, payload.api_key, payload.api_secret)
             candidate_client.get_balance()
         except Exception as exc:
-            should_try_india = payload.broker_name == "delta" and self._extract_error_code(exc) == "invalid_api_key"
+            should_try_alternate_url = payload.broker_name == "delta" and self._extract_error_code(exc) == "invalid_api_key"
 
-            if should_try_india:
-                fallback_url = "https://api.india.delta.exchange"
-                try:
-                    candidate_client = get_broker_client(
-                        payload.broker_name,
-                        payload.api_key,
-                        payload.api_secret,
-                        base_url=fallback_url,
-                    )
-                    candidate_client.get_balance()
-                    selected_base_url = fallback_url
-                except Exception as fallback_exc:
+            if should_try_alternate_url and settings.delta_alternate_base_urls:
+                last_fallback_exc: Exception | None = None
+                for fallback_url in settings.delta_alternate_base_urls:
+                    try:
+                        candidate_client = get_broker_client(
+                            payload.broker_name,
+                            payload.api_key,
+                            payload.api_secret,
+                            base_url=fallback_url,
+                        )
+                        candidate_client.get_balance()
+                        selected_base_url = fallback_url
+                        break
+                    except Exception as fallback_exc:
+                        last_fallback_exc = fallback_exc
+                else:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=self._build_connect_error_message(fallback_exc),
-                    ) from fallback_exc
+                        detail=self._build_connect_error_message(last_fallback_exc or exc),
+                    ) from last_fallback_exc or exc
+            elif should_try_alternate_url:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=self._build_connect_error_message(exc),
+                ) from exc
             else:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -237,10 +259,18 @@ class BrokerService:
         price: Decimal | None,
         order_type: str,
         broker_name: str,
+        idempotency_key: str | None = None,
     ) -> dict:
         client = self.get_active_client(db, user, broker_name)
         try:
-            return client.place_order(symbol=symbol, side=side, quantity=quantity, price=price, order_type=order_type)
+            return client.place_order(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=price,
+                order_type=order_type,
+                idempotency_key=idempotency_key,
+            )
         except HTTPException:
             raise
         except Exception as exc:

@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import FastAPI, Request
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from slowapi.errors import RateLimitExceeded
@@ -16,6 +16,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.api.v1.router import api_router_v1
 from app.core.config import settings
 from app.core.logging import configure_logging, logger
+from app.core.observability import metrics
 from app.core.rate_limit import limiter
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
@@ -124,6 +125,8 @@ def _apply_schema_compatibility_patches() -> None:
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS leader_trade_id INTEGER",
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS stop_loss NUMERIC(18,4)",
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS take_profit NUMERIC(18,4)",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(80)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_trades_user_broker_idempotency ON trades (user_id, broker, idempotency_key)",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS exchange VARCHAR(80) DEFAULT 'Delta Exchange'",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS risk_level VARCHAR(20) DEFAULT 'medium'",
         "ALTER TABLE strategies ADD COLUMN IF NOT EXISTS logo_url TEXT",
@@ -287,6 +290,10 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["health"])
     async def health_check():
         return {"status": "ok"}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint():
+        return PlainTextResponse(metrics.render_prometheus(), media_type="text/plain; version=0.0.4")
 
     return app
 
